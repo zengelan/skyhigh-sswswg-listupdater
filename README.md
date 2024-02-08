@@ -1,4 +1,4 @@
-# skyhigh-sswswg-listupdater
+# skyhigh-sseswg-listupdater
 A self-contained Python script to update Web Policy Lists from a csv file. Either replaces the list with the csv content, or appends entries.
 It is based on the Python Library for Skyhigh SSE Cloud "MVCConnection"
 
