@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import argparse
 import csv
+import json
 import os
 from datetime import datetime
+
 import requests
-import json
+
 
 def pretty(in_obj):
     if not in_obj:
@@ -43,8 +46,7 @@ class MvcConnection:
 
     def authenticate(self, bps_tenantid=None):
         if not self.bps_tenantid and not bps_tenantid:
-            raise (
-                "Error, can't authenticate unless you supply a tenant id from this list: {}".format(self.get_tenants()))
+            raise ("Error, can't authenticate unless you supply a BPS tenant id")
         if bps_tenantid and not self.bps_tenantid:
             self.bps_tenantid = bps_tenantid
         # 1. Get IAM token
@@ -90,19 +92,6 @@ class MvcConnection:
         # print("Authenticated successfully")
         return True
 
-    def get_tenants(self):
-        print(self.username)
-        
-        if not self.tenants:
-            # we handle this one direct as its so special
-            url = self.env + "/shnapi/rest/external/api/v1/groups?source=shn.ec.x"
-            res = self.session.get(url, auth=(self.username, self.password))
-           
-            if res.status_code != 200:
-                raise PermissionError("Could not get associated tenants", res)
-            self.tenants = res.json()
-        return self.tenants
-
     def comm_web(self, method, url, jsondata=None, rawresponse=False):
         if self.needs_new_auth():
             self.authenticate()
@@ -139,14 +128,15 @@ class MvcConnection:
         url = "/policy/v1/gps/content/product/Web/Policy/##CID##/Policy/{}".format(list_id)
         res = self.comm_web("GET", url, rawresponse=True)
         if not res.status_code == 200:
-            raise BaseException("Could not get list detail",res)
+            raise LookupError("Could not get list detail", res)
         list = res.json()
         list.update({"hash": res.headers.get("ETag")})
         return list
 
-    def web_policy_replace_entries(self, list_id, entries):
+    def web_policy_replace_entries(self, list_id_in, entries):
         if not isinstance(entries, list) or not isinstance(entries[0], dict) or not entries[0].get("value"):
-            raise BaseException("entry must be a list of dicts with at least the field 'value'. Field 'comment' is optional")
+            raise ValueError(
+                "entry must be a list of dicts with at least the field 'value'. Field 'comment' is optional")
 
         # get current list:
         current = self.web_policy_list_by_id(list_id)
@@ -159,12 +149,12 @@ class MvcConnection:
         if not newlist.get("type"):
             # we also need to figure out the type reliably
             lists = self.web_policy_lists_customer()
-            for l in lists:
-                if l["id"] == current["id"]:
-                    newlist["type"] = l["type"]
+            for listentry in lists:
+                if listentry["id"] == current["id"]:
+                    newlist["type"] = listentry["type"]
                     break
         # 4 replace the entries
-        newlist["entries"]=entries
+        newlist["entries"] = entries
         # 5 set list type
         if not newlist.get("listFeature"):
             newlist["listFeature"] = "User defined"
@@ -178,13 +168,13 @@ class MvcConnection:
         url = "/policy/v1/commit"
         res = self.comm_web("POST", url, jsondata=data, rawresponse=True)
         if not res.status_code == 200:
-            raise BaseException("Didn't get a 200 for the commit", res)
+            raise LookupError("Didn't get a 200 for the commit", res)
         response = res.json()
         return response["hashes"]["/" + current.get("id")]
 
     def web_policy_list_add_entry(self, list_id, entry):
         if not isinstance(entry, dict) or not entry.get("value"):
-            raise BaseException("entry must be a dict with at least the filed 'value'. Field 'comment' is optional")
+            raise ValueError("entry must be a dict with at least the filed 'value'. Field 'comment' is optional")
         if not entry.get("comment"):
             entry["comment"] = ""
         # get current list:
@@ -217,7 +207,7 @@ class MvcConnection:
         url = "/policy/v1/commit"
         res = self.comm_web("POST", url, jsondata=data, rawresponse=True)
         if not res.status_code == 200:
-            raise BaseException("Didn't get a 200 for the commit", res)
+            raise LookupError("Didn't get a 200 for the commit", res)
         response = res.json()
         return response["hashes"]["/" + current.get("id")]
 
@@ -225,50 +215,83 @@ class MvcConnection:
 def read_text_file(filename):
     entries = []
     try:
-        with open(filename, 'r' ) as theFile:
-            reader = csv.DictReader(theFile,delimiter=';', quotechar='"')
+        with open(filename, 'r') as theFile:
+            reader = csv.DictReader(theFile, delimiter=';', quotechar='"')
             for line in reader:
                 entries.append(line)
     except Exception as e:
-        print("Could not read csv file from {}".format(filename), e)
+        print("ERROR: Could not read csv file from {}".format(filename), e)
+        exit(3)
     return entries
 
 
 if __name__ == '__main__':
-    # Enter script configuration data below
-    list_name=""
-    text_file=""
-    username = ""
-    password = ""
-    tenantid = ""
-    # Enter script configuration data above
 
+    # Instantiate the parser and give it a description that will show before help
+    parser = argparse.ArgumentParser(description='skyhigh-sseswg-listupdater')
 
+    # Add arguments to the parser
+    parser.add_argument('--username', dest='username', type=str, required=True, help='Username for Skyhigh SSE Admin')
+    parser.add_argument('--password', dest='password', type=str, required=True, help='Password for Skyhigh SSE Admin')
+    parser.add_argument('--bps-tenant-id', dest='bps_tenant_id', type=str, required=True,
+                        help='BPS Tenant ID for the tenant to connect to (looks like a uuid)')
+    parser.add_argument('--list-id', dest='list_id', type=str, required=True, help='The ID of the list to replace')
+    parser.add_argument('--input-file', dest='input_file', type=str, required=True,
+                        help='The full path to the input file')
 
-    mvcc = MvcConnection(username=username, password=password)
-    print("Getting tenant list for user")
-    tenants = mvcc.get_tenants()
-    print("Tenant list is : {}".format(tenants))
-    mvcc.bps_tenantid=tenantid
+    # Run method to parse the arguments
+    args = parser.parse_args()
+
+    password_env = os.getenv("SSEPASSWORD", None)
+    if not args.password and not password_env:
+        print("Error you need to supply a password. Either though argument --password "
+              "or in the env variable SSEPASSWORD")
+        exit(1)
+
+    if not args.username:
+        print("Error you need to supply a username.")
+        exit(1)
+
+    if not args.bps_tenant_id:
+        print("Error you need to supply a BPS Tenant ID.")
+        exit(1)
+
+    if not args.list_id:
+        print("Error you need to supply a List ID.")
+        exit(1)
+
+    if password_env and not args.password:
+        password = password_env
+        print("Using password from env variable")
+    else:
+        password = args.password
+
+    # Connect and authenticate
+    mvcc = MvcConnection(username=args.username, password=password,
+                         bps_tenantid=args.bps_tenant_id)
+
     print("Authenticating ...")
     if not mvcc.authenticate():
         print("Could not authenticate")
-        exit(1)
+        exit(2)
     print("Logged into tenant")
     # read text file
-    textfile_entries = read_text_file(text_file)
+    textfile_entries = read_text_file(args.input_file)
     now = datetime.utcnow()
     customer_lists = mvcc.web_policy_lists_customer()
     print("Found {} customer managed lists".format(len(customer_lists)))
-    for l in customer_lists:
-        if l["name"] == list_name:
-            list_id = l["id"]
-    print("The list with name '{}' has ID '{}'".format(list_name, list_id))
+    list_id = args.list_id
+    list_name = None
+    for list_entry in customer_lists:
+        if list_entry["id"] == list_id:
+            list_name = list_entry["name"]
+    print("The list with ID '{}' has name '{}'".format(list_id, list_name))
     my_list = mvcc.web_policy_list_by_id(list_id)
-    print("{} entries in list '{}': \n{}".format(len(my_list["entries"]),list_name,pretty(my_list["entries"])))
+    print("{} entries in list '{}': \n{}".format(len(my_list["entries"]), list_name, pretty(my_list["entries"])))
     print("Now replacing with list: {}".format(textfile_entries))
-    res = mvcc.web_policy_replace_entries(list_id,textfile_entries)
+    res = mvcc.web_policy_replace_entries(list_id, textfile_entries)
     my_new_list = mvcc.web_policy_list_by_id(list_id)
-    print("Now we have {} entries in list '{}': \n{}".format(len(my_new_list["entries"]),list_name,pretty(my_new_list["entries"])))
+    print("Now we have {} entries in list '{}': \n{}".format(len(my_new_list["entries"]), list_name,
+                                                             pretty(my_new_list["entries"])))
     print("Done")
     exit(0)
