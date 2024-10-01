@@ -50,7 +50,7 @@ class MvcConnection:
         if bps_tenantid and not self.bps_tenantid:
             self.bps_tenantid = bps_tenantid
         # 1. Get IAM token
-        iam_url = "https://iam.mcafee-cloud.com/iam/v1.1/token"  # hard coded
+        iam_url = "https://iam.cloud.trellix.com/iam/v1.1/token"  # hard coded
         payload = {
             "client_id": "0oae8q9q2y0IZOYUm0h7",  # hard coded
             "grant_type": "password",
